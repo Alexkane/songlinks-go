@@ -18,7 +18,7 @@ import (
 )
 
 // Version is this SDK's release.
-const Version = "0.1.0"
+const Version = "0.1.1"
 
 // DefaultBaseURL is the API's address.
 const DefaultBaseURL = "https://songlinks.io"
