@@ -13,7 +13,7 @@ type LookupResponse struct {
 	// Why the lookup stopped; nil unless Answer is `rejected`.
 	Rejection *Rejection `json:"rejection,omitempty"`
 
-	// One entry per person.
+	// The people the name could be, one entry each; empty when Answer is `rejected`.
 	Candidates []Cluster `json:"candidates,omitempty"`
 
 	// Pairs of records held apart; never part of a candidate.
@@ -40,7 +40,8 @@ type LookupResponse struct {
 	// Which candidates wrote the song; nil unless a `song` was sent and the lookup found candidates.
 	SongMatch *SongMatch `json:"song_match,omitempty"`
 
-	// Your remaining allowance; nil when no per-caller limit is in force.
+	// Your remaining allowance; nil when no per-caller limit is in force. The edge's per-address limit (about 100
+	// requests per 5 minutes, 20 from VPNs and hosting networks) is separate and not counted here.
 	RateLimit *RateLimit `json:"rate_limit,omitempty"`
 
 	// What produced this answer.
@@ -82,7 +83,7 @@ type Cluster struct {
 	// When a record's ID has since been merged into this one, that older ID.
 	RedirectedFrom string `json:"redirected_from,omitempty"`
 
-	// How many member records the stored person holds; nil when there is no ID.
+	// How many registrations the stored person holds as theirs (its member records); nil when there is no ID.
 	PersonRecords *int `json:"person_records,omitempty"`
 
 	// Member records the stored person holds that this lookup did not reach. Read the person to see them.
@@ -91,10 +92,12 @@ type Cluster struct {
 	// Every distinct registered name in Records.
 	Names []string `json:"names"`
 
-	// Every distinct society number in Records.
+	// Every distinct IPI name number in Records.
 	IPINameNumbers []string `json:"ipi_name_numbers"`
 
 	// Distinct works across Records: a work registered under two of them counts once, so this can be less than their sum.
+	// It counts every record this lookup grouped, so it can be more than the stored person's own Works, which counts only
+	// the records the person ID holds.
 	Works int `json:"works"`
 
 	// The registration records grouped into this person, most works first.
@@ -103,7 +106,7 @@ type Cluster struct {
 	// One entry per pair of records joined.
 	Evidence []Evidence `json:"evidence"`
 
-	// The society number most of this person's works are registered under: the one whose records hold the most works.
+	// The IPI name number most of this person's works are registered under: the one whose records hold the most works.
 	// Empty when no record has one.
 	MainIPINameNumber string `json:"main_ipi_name_number,omitempty"`
 
@@ -117,7 +120,7 @@ type Cluster struct {
 	StoredPersons []string `json:"stored_persons,omitempty"`
 }
 
-// LookupRecord is one registration record: a name as it was registered, with its society number if it has one.
+// LookupRecord is one registration record: a name as it was registered, with its IPI name number if it has one.
 type LookupRecord struct {
 	// Identifies this record in the registration data. Not a person ID: one person usually has several records.
 	PartyRecordID int `json:"party_record_id"`
@@ -131,7 +134,7 @@ type LookupRecord struct {
 	// The rest of the name, usually given names.
 	NamesBeforeKeyName string `json:"names_before_key_name,omitempty"`
 
-	// The society (IPI) name number, or empty when the record has none.
+	// The IPI name number, or empty when the record has none.
 	IPINameNumber string `json:"ipi_name_number,omitempty"`
 
 	// Works registered under this record.
@@ -151,7 +154,7 @@ type Evidence struct {
 	// The two records joined, by `party_record_id`.
 	Records []int `json:"records"`
 
-	// `same_ipi_name_number`: both records carry the same society number. `model`: the model judged them to be the same
+	// `same_ipi_name_number`: both records carry the same IPI name number. `model`: the model judged them to be the same
 	// person.
 	Rule string `json:"rule"`
 
@@ -193,13 +196,13 @@ type ReviewItem struct {
 // Link is a record registered under another name next to one of this lookup's records: a stage name and a legal name,
 // for example. A different claim from a candidate: nothing here is joined, and its works are not counted in Works.
 type Link struct {
-	// The linked record.
+	// The linked record, by PartyRecordID.
 	PartyRecordID int `json:"party_record_id"`
 
 	// The linked record's registered name.
 	Name string `json:"name"`
 
-	// The linked record's society number, or empty.
+	// The linked record's IPI name number, or empty.
 	IPINameNumber string `json:"ipi_name_number,omitempty"`
 
 	// `checked`: the two people share no registered work, so the link is not a co-writer's. `co-writers too`: they share
@@ -231,7 +234,7 @@ type Rejection struct {
 	// `publishers-only`: every match is registered only as a publisher or administrator, not as a writer.
 	Code string `json:"code"`
 
-	// Up to five registered names closest to the one asked for, as spelling suggestions.
+	// Up to five registered names closest to the one asked for, as spelling suggestions; often empty.
 	Nearest []string `json:"nearest,omitempty"`
 
 	// For `publishers-only`, the roles of the records set aside: `publisher`, `administrator`, or both.
@@ -336,8 +339,9 @@ type RateLimit struct {
 	WindowSeconds int `json:"window_seconds"`
 }
 
-// PersonResponse is a stored person: what the ID holds, not a fresh lookup. Records are members. Possible records are
-// not members, are never counted, and may belong to someone else.
+// PersonResponse is a stored person: what a person ID holds, not a fresh lookup. Records are its members, the
+// registrations the ID holds as this person's. Possible lists registrations that may also be theirs; they are not
+// members, are never counted in Works, and may belong to someone else.
 type PersonResponse struct {
 	// `SLP-XXXX-XXXX-C`; the last character is a check character.
 	PersonID string `json:"person_id"`
@@ -350,8 +354,8 @@ type PersonResponse struct {
 	// is no longer in the registration data; the ID stays.
 	State string `json:"state"`
 
-	// What the ID qualifies on now: `same_ipi` (members share a society number), `ipi` (the anchor's society number and
-	// catalogue), `corroborated` (a member's society number confirmed by an independent outside source) or `human`
+	// What the ID qualifies on now: `same_ipi` (members share a IPI name number), `ipi` (the anchor's IPI name number and
+	// catalogue), `corroborated` (a member's IPI name number confirmed by an independent outside source) or `human`
 	// (decided by a person). It can change after issue; IssuedEvidence is what it was issued on.
 	Evidence string `json:"evidence"`
 
@@ -376,16 +380,15 @@ type PersonResponse struct {
 	// Every distinct registered name among the members.
 	Names []string `json:"names"`
 
-	// Every distinct society number among the members.
+	// Every distinct IPI name number among the members.
 	IPINameNumbers []string `json:"ipi_name_numbers"`
 
 	// Distinct works across member records; Possible records are not counted.
 	Works int `json:"works"`
 
-	// This person's main society number: the one on the record their ID was created around (`link` `anchor`), which never
-	// changes. Usually the number most of their works are under; a record with another number may hold more (since
-	// 2026-09-15 such a record joins only on a person's verdict; earlier IDs can hold ones the model joined, `rule`
-	// `model`). Empty when no member has one.
+	// This person's main IPI name number: the one on the record their ID was created around (the record whose `link` is
+	// `anchor`). It never changes. It is usually, but not always, the number most of their works are under. Empty when no
+	// member has one.
 	MainIPINameNumber string `json:"main_ipi_name_number,omitempty"`
 
 	// Distinct works on the member records carrying MainIPINameNumber. Works minus this is how many works only the
@@ -405,7 +408,8 @@ type PersonResponse struct {
 	// Every change to this ID, oldest first.
 	History []PersonEvent `json:"history"`
 
-	// Your remaining allowance; nil when no per-caller limit is in force.
+	// Your remaining allowance; nil when no per-caller limit is in force. The edge's per-address limit (about 100
+	// requests per 5 minutes, 20 from VPNs and hosting networks) is separate and not counted here.
 	RateLimit *RateLimit `json:"rate_limit,omitempty"`
 
 	// What grouped these records, and what served the response.
@@ -426,7 +430,7 @@ type PersonRecord struct {
 	// The rest of the name, usually given names.
 	NamesBeforeKeyName string `json:"names_before_key_name,omitempty"`
 
-	// The society (IPI) name number, or empty.
+	// The IPI name number, or empty.
 	IPINameNumber string `json:"ipi_name_number,omitempty"`
 
 	// This record's own works, counted once each.
@@ -435,7 +439,7 @@ type PersonRecord struct {
 	// `anchor`: the record the ID was issued on. `asserted`: a member. `possible`: perhaps this person, but not a member.
 	Link string `json:"link"`
 
-	// Why the record was linked: `same_ipi` (the same society number as a member), `ipi` (the anchor's own society
+	// Why the record was linked: `same_ipi` (the same IPI name number as a member), `ipi` (the anchor's own IPI name
 	// number), `model` (the model's judgement), `corroborated` (confirmed by an independent outside source) or `verdict`
 	// (decided by a person).
 	Rule string `json:"rule"`
@@ -460,7 +464,7 @@ type PersonRecord struct {
 	MemberOfPrerelease *bool `json:"member_of_prerelease,omitempty"`
 }
 
-// PersonWork is one work registered under a member record.
+// PersonWork is one work registered under one or more of the person's member records (the registrations the ID holds).
 type PersonWork struct {
 	// Identifies the work in the registration data.
 	MLCWorkID string `json:"mlc_work_id"`
@@ -475,7 +479,8 @@ type PersonWork struct {
 	Records []int `json:"records"`
 }
 
-// WorksPage is one page of the person's works, most-recorded first.
+// WorksPage is one page of the person's works: most-recorded first when recording counts are available (see
+// OrderedBy).
 type WorksPage struct {
 	// All the person's works: distinct works across member records, a work under two of them counted once.
 	Total int `json:"total"`
@@ -545,19 +550,19 @@ type PersonProvenance struct {
 
 // BuildRef is a build: the automatic run that groups records into people and issues IDs.
 type BuildRef struct {
-	// Identifies the build.
+	// The build's number.
 	BuildID int `json:"build_id"`
 
 	// The build's status, such as `applied`.
 	Status string `json:"status"`
 
-	// Where it ran.
+	// Where the build ran, such as `production`; diagnostic.
 	Environment string `json:"environment"`
 
-	// ISO 8601.
+	// When the build started, as an ISO 8601 timestamp.
 	StartedAt string `json:"started_at,omitempty"`
 
-	// ISO 8601.
+	// When the build finished, as an ISO 8601 timestamp.
 	FinishedAt string `json:"finished_at,omitempty"`
 
 	// Identifies the model the build used.
@@ -566,7 +571,7 @@ type BuildRef struct {
 	// Identifies the code the build ran.
 	CodeCommit string `json:"code_commit"`
 
-	// True if the build ran with uncommitted changes.
+	// True if the build ran with uncommitted changes; diagnostic.
 	CodeDirty bool `json:"code_dirty"`
 
 	// The date of the registration-data release the build read, YYYY-MM-DD. Empty when that load is undated: never a
@@ -574,8 +579,8 @@ type BuildRef struct {
 	MLCSnapshot string `json:"mlc_snapshot,omitempty"`
 }
 
-// PersonWithdrawnResponse is the body of an HTTP 410 answer: this ID was issued and later withdrawn. The number will
-// never be issued to anyone else.
+// PersonWithdrawnResponse is the body of an HTTP 410 answer: this ID was issued and later withdrawn. This person ID
+// will never be issued to anyone else.
 type PersonWithdrawnResponse struct {
 	// The withdrawn ID.
 	PersonID string `json:"person_id"`
@@ -622,14 +627,14 @@ type WriterAnswer struct {
 	// The person's ID, `SLP-XXXX-XXXX-C`; empty unless Status is `person`.
 	PersonID string `json:"person_id,omitempty"`
 
-	// The name to show for the person.
+	// The name to show for the person; empty unless Status is `person`.
 	Name string `json:"name,omitempty"`
 
 	// Every distinct name the person's records are registered under, Name first. Compare a spelling you hold against it:
 	// a spelling not in this list is not one this person is registered under. Empty unless Status is `person`.
 	Names []string `json:"names,omitempty"`
 
-	// Distinct works across the person's records.
+	// Distinct works across the person's records; nil unless Status is `person`.
 	Works *int `json:"works,omitempty"`
 
 	// The person's main number: the one on the record their ID was created around. It can differ from IPINameNumber: the
@@ -705,7 +710,9 @@ type VersionResponse struct {
 	LatencyMs int `json:"latency_ms"`
 }
 
-// APIError is the body of a 400, 404, 500 or 503 response. It never carries detail about what failed.
+// APIError is the body of a 400, 404, 500 or 503 response. It never carries detail about what failed. A malformed
+// parameter (an empty name, a threshold out of range) is answered 422 instead, with a `detail` list saying which
+// parameter and why.
 type APIError struct {
 	// `too_many` or `no_numbers` (400), `not_found` (404), `internal` (500), or `not_ready` or `busy` (503). Branch on
 	// this.
@@ -730,7 +737,8 @@ type RateLimited struct {
 	// The length of the window, in seconds.
 	WindowSeconds int `json:"window_seconds"`
 
-	// How long to wait; also sent as the `Retry-After` header.
+	// The most you need to wait, in seconds. The API's own limit also sends it as the `Retry-After` header; the edge's
+	// per-address limit sends it only here.
 	RetryAfterSeconds int `json:"retry_after_seconds"`
 
 	// Requests counted in the current window.
