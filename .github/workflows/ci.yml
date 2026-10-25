@@ -1,0 +1,24 @@
+name: ci
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go: ["1.23", "1.24", "stable"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+      - run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      # vet and build cover examples/, so an example that misreads a field fails here.
+      - run: go vet ./... && go build ./...
+      # Includes TestEveryExportedNameIsDocumented: an exported name without a doc comment fails the build.
+      - run: go test ./...
+      # The generated types must be what the generator makes from the committed document.
+      - run: python3 scripts/gen_models.py && gofmt -w models.go && git diff --exit-code models.go
