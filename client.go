@@ -10,9 +10,11 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // Version is this SDK's release.
@@ -26,6 +28,48 @@ const WritersMax = 50
 
 // WorksPageMax is the most works one [Client.Person] call returns; [Client.PersonWorks] pages through the rest.
 const WorksPageMax = 200
+
+// maxWait is the longest wait the client sleeps through before retrying; a longer one is returned to the caller at
+// once.
+const maxWait = time.Minute
+
+// NormalizeIPI writes an IPI name number the way [Client.Writers] answers do, so the answers can be matched to the
+// numbers you sent. Spaces and dashes (including the typographic dashes a spreadsheet substitutes) are dropped, and a
+// run of 1 to 11 digits is padded with leading zeros to 11: "338980326" and "003-389-803 26" both become
+// "00338980326". Anything else is not an IPI name number, and is returned with surrounding spaces removed and cut to
+// 32 characters, as the API echoes it with Status "invalid". A dot is not a separator: "15036818.0" is what a
+// spreadsheet makes of a number read as a float, and dropping the dot would turn it into somebody else's number.
+func NormalizeIPI(ipiNameNumber string) string {
+	digits := strings.Map(func(r rune) rune {
+		if isIPISeparator(r) {
+			return -1
+		}
+		return r
+	}, ipiNameNumber)
+	if ipiDigits.MatchString(digits) {
+		return strings.Repeat("0", 11-len(digits)) + digits
+	}
+	// Characters, not bytes, as the API counts them: a byte cut could split a character in two.
+	trimmed := []rune(strings.TrimFunc(ipiNameNumber, isPythonSpace))
+	if len(trimmed) > 32 {
+		trimmed = trimmed[:32]
+	}
+	return string(trimmed)
+}
+
+// ipiDigits mirrors the API's own reading of an IPI name number (writer/service.py ipi_key): 1 to 11 ASCII digits.
+var ipiDigits = regexp.MustCompile(`^[0-9]{1,11}$`)
+
+// isIPISeparator is the API's separator class, `[\s\-\u2010-\u2015\u2212]` in Python, where \s is any Unicode
+// space: a number pasted from a web page often carries non-breaking spaces, which Go's regexp \s (ASCII only) keeps.
+func isIPISeparator(r rune) bool {
+	return isPythonSpace(r) || r == '-' || (r >= 0x2010 && r <= 0x2015) || r == 0x2212
+}
+
+// isPythonSpace is what Python's \s accepts: Unicode spaces plus the ASCII separators 0x1c-0x1f.
+func isPythonSpace(r rune) bool {
+	return unicode.IsSpace(r) || (r >= 0x1c && r <= 0x1f)
+}
 
 // Client calls the Songlinks API. Create one with [New] and reuse it; it is safe for concurrent use.
 type Client struct {
@@ -81,10 +125,13 @@ type LookupOptions struct {
 	// Song is the title of a song the writer wrote. When given, the answer's SongMatch says which candidates hold a
 	// work with that title.
 	Song string
-	// Threshold is how sure the model must be before it joins two records, from 0.5 to 0.99.
+	// Threshold is how sure Songlinks must be before it joins two records into one person, from 0.5 to 0.99. Higher
+	// joins fewer records and keeps more apart. Zero leaves the API's default, which [Client.Version] reports as
+	// Threshold (0.85 today).
 	Threshold float64
-	// Routes are extra routes to run. Nil leaves the API's default, ["catalogue"], which also returns records
-	// registered under another name. An empty, non-nil slice skips them, and the lookup is faster.
+	// Routes are extra searches to run beside the name match. The one there is, "catalogue", also finds records
+	// registered under another name that share the writer's catalogue, such as a stage name, and returns them in
+	// Links. Nil runs it, as the API does by default; an empty, non-nil slice skips it, and the lookup is faster.
 	Routes []string
 }
 
@@ -92,16 +139,21 @@ type LookupOptions struct {
 type PersonOptions struct {
 	// WorksOffset is the position of the first work to return, from 0.
 	WorksOffset int
-	// WorksLimit is how many works to return, from 1 to 200.
+	// WorksLimit is how many works to return, from 1 to 200. Zero leaves the API's default of 100.
 	WorksLimit int
 }
 
 // Lookup looks up a songwriter by name, such as "mark hoppus", and returns the people the name could be, each with the
 // registrations behind them. Check the answer's Answer field first: "rejected" is an answer, not an error, and
-// Rejection says why. Options may be nil.
+// Rejection says why. A single word, such as "madonna", is rejected with Rejection.Code "single-token", since one word
+// matches too many people to group. Options may be nil.
 //
-// It returns an [*Error] when the API answers with an error.
+// It returns an error, without calling the API, when the name is empty, and an [*Error] when the API answers with an
+// error, such as Code "invalid_request" for a Threshold out of range.
 func (c *Client) Lookup(ctx context.Context, name string, options *LookupOptions) (*LookupResponse, error) {
+	if strings.TrimSpace(name) == "" {
+		return nil, errors.New("songlinks: Lookup needs a name")
+	}
 	query := url.Values{"name": {name}}
 	if options != nil {
 		if options.Song != "" {
@@ -127,9 +179,13 @@ func (c *Client) Lookup(ctx context.Context, name string, options *LookupOptions
 // followed to the person it now points at, and the answer's RedirectedFrom names the ID you asked for. Options may be
 // nil, for the first page.
 //
-// It returns a [*PersonWithdrawnError] when the ID has been withdrawn, and an [*Error] for any other error answer, such
-// as Code "not_found".
+// It returns an error, without calling the API, when the ID is empty; a [*PersonWithdrawnError] when the ID has been
+// withdrawn; and an [*Error] for any other error answer, such as Code "not_found" for an unknown ID.
 func (c *Client) Person(ctx context.Context, personID string, options *PersonOptions) (*PersonResponse, error) {
+	// An empty ID would ask for /v1/person/, which is a different route and answers a bare 404.
+	if strings.TrimSpace(personID) == "" {
+		return nil, errors.New("songlinks: Person needs a person ID")
+	}
 	query := url.Values{}
 	if options != nil {
 		if options.WorksOffset != 0 {
@@ -143,9 +199,10 @@ func (c *Client) Person(ctx context.Context, personID string, options *PersonOpt
 	return &person, c.get(ctx, "/v1/person/"+url.PathEscape(personID), query, &person)
 }
 
-// PersonWorks reads every work of a person, in the API's order, pageSize works per request (at most [WorksPageMax];
-// 0 means the most). Pages are requested only as the loop asks for more, so breaking out of the loop stops the
-// requests. An error ends the sequence: it is yielded once, with a zero PersonWork.
+// PersonWorks reads every work of a person, in the API's order, pageSize works per request. A pageSize of 0 or less,
+// or above [WorksPageMax], means [WorksPageMax]. Pages are requested only as the loop asks for more, so breaking out
+// of the loop stops the requests. An error ends the sequence: it is yielded once, with a zero PersonWork, and is the
+// same error [Client.Person] returns, so a withdrawn ID yields a [*PersonWithdrawnError].
 //
 //	for work, err := range client.PersonWorks(ctx, "SLP-ZYM7-GD3E-S", 0) {
 //		if err != nil {
@@ -178,9 +235,15 @@ func (c *Client) PersonWorks(ctx context.Context, personID string, pageSize int)
 	}
 }
 
-// Writers checks up to [WritersMax] IPI name numbers at once and returns, for each in the order sent, the stored
-// person who holds it and a status. Leading zeros may be left off. The API refuses a longer list rather than
-// shortening it, and so does this method: for more, call it once per batch.
+// Writers checks up to [WritersMax] IPI name numbers at once and returns the person who holds each and a status, with
+// totals in Summary. Leading zeros may be left off, and spaces and dashes are ignored. The API refuses a longer list
+// rather than shortening it, and so does this method, counting entries: for more, call it once per batch. Each entry
+// is one number: an entry holding a comma, semicolon, line break or the text "%2C" is refused, since the API would
+// read it as several.
+//
+// The answer has one entry per distinct number, in the order each was first sent, written as 11 digits. Two forms of
+// one number ("338980326" and "00338980326") and repeats come back as one entry, so match answers to your list by
+// number, not by position: [NormalizeIPI] turns your input into the form the answer uses.
 //
 // It returns an error, without calling the API, when the list is empty or too long, and an [*Error] when the API
 // answers with an error.
@@ -190,6 +253,14 @@ func (c *Client) Writers(ctx context.Context, ipiNameNumbers []string) (*Writers
 	}
 	if len(ipiNameNumbers) > WritersMax {
 		return nil, fmt.Errorf("songlinks: Writers takes at most %d IPI name numbers per call, got %d", WritersMax, len(ipiNameNumbers))
+	}
+	for _, n := range ipiNameNumbers {
+		// The API splits its list on these, and on the text %2C, so one entry holding one would be read as several.
+		// The edges are trimmed first, as the API trims them, so a line read from a Windows file (ending "\r") passes.
+		inner := strings.TrimFunc(n, isPythonSpace)
+		if strings.ContainsAny(inner, ",;\r\n") || strings.Contains(strings.ToLower(inner), "%2c") {
+			return nil, fmt.Errorf("songlinks: Writers takes one IPI name number per entry, got %q", n)
+		}
 	}
 	var answer WritersResponse
 	return &answer, c.get(ctx, "/v1/writers", url.Values{"ipi": {strings.Join(ipiNameNumbers, ",")}}, &answer)
@@ -236,9 +307,11 @@ func (c *Client) get(ctx context.Context, path string, query url.Values, into an
 		if resp.StatusCode < 300 {
 			return json.Unmarshal(body, into)
 		}
-		retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"))
+		retryAfter := retryAfterOf(resp.Header.Get("Retry-After"), body)
+		// A wait longer than a minute (the edge's rate limit asks for up to five) is the caller's to schedule, not
+		// something to block on inside one call, so it is returned at once.
 		if (resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable) &&
-			attempt < c.maxRetries {
+			attempt < c.maxRetries && retryAfter <= maxWait {
 			if err := sleep(ctx, backoff(attempt, retryAfter)); err != nil {
 				return err
 			}
@@ -263,10 +336,13 @@ type Error struct {
 	Code string
 	// Message is the API's message, or a description of the failure when it sent none.
 	Message string
-	// RetryAfter is how long the API asked the caller to wait before trying again, on a 429; zero when it did not
-	// say. The client has already waited and retried before returning this error.
+	// RetryAfter is how long the API asked the caller to wait before trying again, on a 429 or 503; zero when it
+	// did not say. The public API allows about 100 requests per 5 minutes from one address, across every endpoint
+	// (20 from VPNs, proxies and hosting providers, which includes most cloud servers).
+	// The client waits out a wait of a minute or less and retries by itself, so an error with a short RetryAfter
+	// means its retries ran out; a longer wait is returned at once. It is the most you need to wait, not a countdown.
 	RetryAfter time.Duration
-	// Body is the answer's body, as sent.
+	// Body is the answer's body, as sent. Decode it into [APIError] for an ordinary error or [RateLimited] for a 429.
 	Body json.RawMessage
 }
 
@@ -303,6 +379,24 @@ func toError(status int, body []byte, retryAfter time.Duration) error {
 	if m, ok := fields.Message.(string); ok {
 		e.Message = m
 	}
+	// 422 is FastAPI's validation answer: no `error` or `message`, but a `detail` list saying which parameter was
+	// wrong and why. Its first entry becomes the message, so a Threshold of 2 reads "threshold: Input should be less
+	// than or equal to 0.99" rather than "HTTP 422".
+	if status == http.StatusUnprocessableEntity {
+		var invalid struct {
+			Detail []struct {
+				Loc []any  `json:"loc"`
+				Msg string `json:"msg"`
+			} `json:"detail"`
+		}
+		if json.Unmarshal(body, &invalid) == nil && len(invalid.Detail) > 0 && invalid.Detail[0].Msg != "" {
+			d := invalid.Detail[0]
+			e.Message = d.Msg
+			if len(d.Loc) > 0 {
+				e.Message = fmt.Sprint(d.Loc[len(d.Loc)-1]) + ": " + d.Msg
+			}
+		}
+	}
 	switch code, ok := fields.Error.(string); {
 	case ok:
 		e.Code = code
@@ -325,20 +419,36 @@ func toError(status int, body []byte, retryAfter time.Duration) error {
 	return e
 }
 
-// parseRetryAfter reads only the delta-seconds form: the API never sends an HTTP date, and a value it cannot read is
-// treated as absent.
-func parseRetryAfter(value string) time.Duration {
-	seconds, err := strconv.ParseFloat(value, 64)
-	if err != nil || seconds < 0 {
-		return 0
+// retryAfterOf is the wait the API asked for: the Retry-After header, or else the body's retry_after_seconds. The
+// edge's rate limit answers with the body only (its 429 carries no header), so reading the header alone would retry a
+// five-minute limit after half a second. Only the header's delta-seconds form is read: the API never sends an HTTP
+// date. Zero means the API did not say.
+func retryAfterOf(header string, body []byte) time.Duration {
+	if seconds, err := strconv.ParseFloat(header, 64); err == nil && seconds >= 0 {
+		return secondsToDuration(seconds)
+	}
+	var fields struct {
+		RetryAfterSeconds *float64 `json:"retry_after_seconds"`
+	}
+	if json.Unmarshal(body, &fields) == nil && fields.RetryAfterSeconds != nil && *fields.RetryAfterSeconds >= 0 {
+		return secondsToDuration(*fields.RetryAfterSeconds)
+	}
+	return 0
+}
+
+// secondsToDuration clamps before converting: a Duration holds about 292 years, and converting a larger float (or
+// +Inf) is implementation-defined in Go, which could make an absurd wait look short and be retried at once.
+func secondsToDuration(seconds float64) time.Duration {
+	if seconds > 24*60*60 {
+		return 24 * time.Hour
 	}
 	return time.Duration(seconds * float64(time.Second))
 }
 
-// backoff is Retry-After when the API gives one, capped at a minute; otherwise 0.5 s, 1 s, 2 s ... with jitter.
+// backoff is the API's requested wait when it gives one; otherwise 0.5 s, 1 s, 2 s ... with jitter.
 func backoff(attempt int, retryAfter time.Duration) time.Duration {
 	if retryAfter > 0 {
-		return min(retryAfter, time.Minute)
+		return retryAfter
 	}
 	base := 500 * time.Millisecond << attempt
 	return time.Duration(float64(base) * (0.75 + rand.Float64()/2))

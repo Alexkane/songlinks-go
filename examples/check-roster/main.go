@@ -8,7 +8,6 @@ package main
 import (
 	"context"
 	"encoding/csv"
-	"fmt"
 	"log"
 	"os"
 	"strconv"
@@ -45,8 +44,8 @@ func main() {
 	defer out.Flush()
 	_ = out.Write([]string{"ipi", "status", "person_id", "name", "works"})
 	for _, ipi := range ipis {
-		// The API answers with the number in its full 11-digit form, so look it up the same way.
-		w, ok := answers[fmt.Sprintf("%011s", ipi)]
+		// The answer writes each number as 11 digits, with repeats merged, so look yours up in the same form.
+		w, ok := answers[songlinks.NormalizeIPI(ipi)]
 		if !ok {
 			_ = out.Write([]string{ipi, "", "", "", ""})
 			continue

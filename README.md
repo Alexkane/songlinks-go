@@ -12,11 +12,13 @@ with no number at all. Songlinks groups those registrations into one person, sho
 keeps apart the ones it isn't sure of.
 
 - **Free, with no key and no sign-up.**
-- **Typed end to end.** Every answer is a struct generated from the API's own OpenAPI document, with the API's
-  description of each field as its doc comment.
+- **Typed end to end.** Every answer is a Go struct, with a description of every field taken from the API's own
+  description of itself.
 - **No dependencies.** The standard library only, on Go 1.23 and later.
-- **Built to be called from real apps.** `context` on every call, typed errors, retries that honour `Retry-After`, and
-  paging done for you with a range-over-func iterator.
+- **Built for real apps.** Clear errors, automatic retries when the API is busy, and long lists paged for you.
+
+> **New to this?** Skip to [Your first program, step by step](#your-first-program-step-by-step): it starts from
+> installing the language and ends with a working answer. The [words used here](#the-words-used-here) are explained too.
 
 ```sh
 go get github.com/Alexkane/songlinks-go
@@ -43,8 +45,11 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	best := answer.Candidates[0]
-	fmt.Println(best.PersistentID, best.Names, best.Works)
+	if answer.Answer == "rejected" { // for example a one-word name, which matches too many people
+		log.Fatalf("no answer: %s", answer.Rejection.Code)
+	}
+	candidate := answer.Candidates[0]
+	fmt.Println(candidate.PersistentID, candidate.Names, candidate.Works)
 	// SLP-ZYM7-GD3E-S [MARK HOPPUS] 302
 
 	person, err := client.Person(ctx, "SLP-ZYM7-GD3E-S", &songlinks.PersonOptions{WorksLimit: 3})
@@ -71,7 +76,7 @@ Every person has a page you can link to, such as [songlinks.io/person/SLP-ZYM7-G
 It shows the registrations behind the person and what each join rests on.
 
 > **Beta.** Unverified machine output, from a dated snapshot of registration data (every answer's
-> `Provenance.MLCSnapshot` gives its date). Some answers are wrong and some are incomplete. Not for rights or royalty
+> `Provenance.MLCSnapshot` gives its date, and `client.Version(ctx)` gives the current one). Some answers are wrong and some are incomplete. Not for rights or royalty
 > decisions.
 
 ### More
@@ -79,7 +84,8 @@ It shows the registrations behind the person and what each join rests on.
 ```go
 // Which of several writers with the same name wrote a song? Pass one of their songs.
 answer, err := client.Lookup(ctx, "amy allen", &songlinks.LookupOptions{Song: "espresso"})
-// answer.SongMatch.Match == "exact", answer.SongMatch.Candidates == [c1]: the Amy Allen credited on that song
+// answer.SongMatch.Match == "exact", answer.SongMatch.Candidates == [c1]: the candidate whose Ref is "c1" is the
+// Amy Allen credited on that song
 
 // Every work of a person, paged for you. Breaking out of the loop stops the requests.
 for work, err := range client.PersonWorks(ctx, "SLP-ZYM7-GD3E-S", 0) {
@@ -89,6 +95,127 @@ for work, err := range client.PersonWorks(ctx, "SLP-ZYM7-GD3E-S", 0) {
 	fmt.Println(work.Title)
 }
 ```
+
+## Your first program, step by step
+
+Never called an API from code before? This takes about five minutes.
+
+**Before you start**, you need two things:
+
+- **A terminal**, where you type commands. On a Mac, open Terminal (in Applications, then Utilities). On Windows, open
+  PowerShell from the Start menu. Type each command below on its own line and press Enter after it.
+- **A plain-text editor** for code, such as the free [Visual Studio Code](https://code.visualstudio.com). A word
+  processor (Word, or TextEdit in its usual mode) adds formatting that stops code from running.
+1. **Install Go** 1.23 or later from [go.dev/dl](https://go.dev/dl/). Check it worked by typing `go version` in a
+   terminal; it prints a version such as `go version go1.23.4`.
+2. **Make a folder for your project** (a "module", in Go's words) and add the SDK to it:
+
+   ```sh
+   mkdir songlinks-test
+   cd songlinks-test
+   go mod init songlinks-test
+   go get github.com/Alexkane/songlinks-go
+   ```
+
+   `go get` prints the version it added, such as `go: added github.com/Alexkane/songlinks-go v0.1.0`.
+3. **Create a file** called `main.go` in the `songlinks-test` folder, in your editor, with this in it:
+
+   ```go
+   package main
+
+   import (
+   	"context"
+   	"fmt"
+   	"log"
+   	"os"
+   	"strings"
+
+   	"github.com/Alexkane/songlinks-go"
+   )
+
+   func main() {
+   	name := "mark hoppus"
+   	if len(os.Args) > 1 {
+   		name = os.Args[1]
+   	}
+   	client := songlinks.New(songlinks.WithUserAgent("my-first-test/1.0"))
+   	answer, err := client.Lookup(context.Background(), name, nil)
+   	if err != nil {
+   		log.Fatal(err)
+   	}
+   	if answer.Answer == "rejected" {
+   		fmt.Println("No answer, because:", answer.Rejection.Code)
+   		return
+   	}
+   	for _, person := range answer.Candidates {
+   		id := person.PersistentID
+   		if id == "" {
+   			id = "(no person ID yet)"
+   		}
+   		fmt.Printf("%s %s (works: %d)\n", id, strings.Join(person.Names, ", "), person.Works)
+   	}
+   }
+   ```
+
+   `WithUserAgent` names your program to the API, so a problem can be traced to it; any short name will do.
+4. **Run it**, from the same folder, with any songwriter's full name:
+
+   ```sh
+   go mod tidy
+   go run . "mark hoppus"
+   ```
+
+   `go mod tidy` records what `main.go` uses; you only need it once. You should see
+   `SLP-ZYM7-GD3E-S MARK HOPPUS (works: 302)`.
+
+   **Keep the quotes** around the name: without them, only the first word is sent.
+
+   **What you might see instead:**
+   - **Several lines.** The name could belong to more than one person, so each possible person gets a line.
+   - **`(no person ID yet)`.** Songlinks found the registrations but hasn't given that person an ID yet. That is
+     normal, and the rest of the line is still the answer.
+   - **`No answer, because: single-token`.** The name is one word, such as `madonna`, which matches too many people.
+     Use the full name.
+   - **`No answer, because: no-match`.** Nothing registered is close to that name. Check the spelling.
+
+From here, the [examples](#examples) do real jobs: copy one from the
+[examples folder on GitHub](https://github.com/Alexkane/songlinks-go/tree/main/examples) into your folder as
+`main.go` and run it the same way. [Reading an answer](#reading-an-answer) explains what comes back, and the
+[words used here](#the-words-used-here) are explained just below.
+
+## The words used here
+
+Music-publishing words, which you'll meet in the answers:
+
+- **Songwriter registration**: when a song is written, its publisher registers it so royalties reach the people who
+  wrote it. Each registration names the writers, as typed by whoever filed it. One songwriter can therefore appear
+  under several spellings, and two different songwriters can share a name.
+- **Record**: one of those registered writer entries: a name as it was typed, with its IPI name number if it has one,
+  and the songs (works) registered under it.
+- **IPI name number**: an 11-digit number that identifies a songwriter or publisher to collecting societies, such as
+  `00338980326`. Many records have none, and one person can have several.
+  [More about IPI name numbers](https://songlinks.io/guides/ipi-name-numbers).
+- **Work**: a song as a composition (the melody and lyrics), as opposed to a particular recording of it.
+- **ISWC**: the international code for a work, such as `T0719661581`. Not every registered work has one.
+- **Person** and **person ID**: Songlinks groups the records it judges to be one human into a person and gives them a
+  person ID, such as `SLP-ZYM7-GD3E-S`. Every person has a page, such as
+  [songlinks.io/person/SLP-ZYM7-GD3E-S](https://songlinks.io/person/SLP-ZYM7-GD3E-S).
+- **Candidate**: what a lookup by name returns: the records that name reaches, grouped into people for that one
+  question. A candidate usually matches one person ID, but it is worked out fresh each time.
+- **Evidence**: why two records were grouped: the same IPI name number, or a judgement that they are the same person
+  (for example, the same co-writers and publishers).
+- **Rejected**: a lookup that gave no candidates, with a reason, such as a one-word name (`madonna`) that matches too
+  many people to group. It is an answer, not an error.
+
+Programming words:
+
+- **API**: a service that programs talk to over the internet. The Songlinks API answers questions such as "who is
+  this songwriter?".
+- **SDK**: this library. It does the talking to the API for you, so your code calls a function instead of building
+  web requests by hand.
+- **Rate limit**: the most requests the API accepts from one internet address in a stretch of time: about 100 every
+  5 minutes, or 20 from VPNs and cloud servers. Over it, the SDK tells you how long to wait.
+- **Module**: a Go project, with a `go.mod` file that lists the libraries it uses, such as this one.
 
 ## Checking a whole roster?
 
@@ -131,9 +258,16 @@ and the rest), with Go's initialisms (`PersistentID`, `IPINameNumber`, `ISWC`). 
 
 ### Reading an answer
 
+A **person** and a **candidate** are different things: see [the words used here](#the-words-used-here).
+
+- **A candidate can count more works than its person.** "mark hoppus" reaches two registrations, 302 works between
+  them; the person `SLP-ZYM7-GD3E-S` holds one of them as theirs (294 works) and lists the other in `Possible`.
+  `Person` is the authority on what an ID holds.
+- **Match a writers check by number, not position.** Repeats and two forms of one number come back as one entry, as
+  11 digits. `songlinks.NormalizeIPI` turns your input into the same form.
 - **A missing string is `""`.** Many records have no person ID yet, and that is ordinary. A number, boolean or object
-  the API may leave out is a pointer, because there nil and zero say different things: a nil `Works` is not known, and
-  a false `Prerelease` is a released ID.
+  the API may leave out is a pointer, because there nil and zero say different things: a `WriterAnswer`'s `Works` is
+  nil unless its `Status` is `"person"`, and a false `Prerelease` is a released ID.
 - **A lookup candidate is not a stored person.** It is the lookup's own grouping, made for the name you asked.
   `PersistentID` is the stored person when there is exactly one. A candidate whose records belong to more than one
   stored person has an empty `PersistentID` and lists them in `StoredPersons`. Read each record's own `PersistentID`.
@@ -147,7 +281,9 @@ on), a `Message` for people, and the response `Body`. A withdrawn person ID is a
 carrying the API's full answer about the ID; it also unwraps to an `*Error` with `Code` `"withdrawn"`.
 
 ```go
-_, err := client.Person(ctx, "SLP-0000-0000-0", nil)
+// Continuing inside main above, where client and ctx were created (and with "errors" imported).
+personID := "SLP-0000-0000-0" // an ID no one holds, to see the not-found branch
+_, err := client.Person(ctx, personID, nil)
 
 var withdrawn *songlinks.PersonWithdrawnError
 var apiErr *songlinks.Error
@@ -156,6 +292,8 @@ case errors.As(err, &withdrawn):
 	fmt.Println("withdrawn at", withdrawn.Person.WithdrawnAt) // a 410, and a valid answer to keep
 case errors.As(err, &apiErr) && apiErr.Code == "rate_limited":
 	fmt.Println("retry in", apiErr.RetryAfter)
+case errors.As(err, &apiErr) && apiErr.Code == "not_found":
+	fmt.Println("no person with that ID") // a 404, such as for SLP-0000-0000-0
 case errors.As(err, &apiErr):
 	fmt.Println(apiErr.StatusCode, apiErr.Code, apiErr.Message)
 case err != nil:
@@ -163,8 +301,10 @@ case err != nil:
 }
 ```
 
-- **Retried automatically:** `429` and `503` answers and network failures, up to `WithMaxRetries` times (default 2). A
-  `Retry-After` header is honoured, up to a minute; otherwise it backs off from half a second.
+- **Retried automatically:** `429` and `503` answers and network failures, up to `WithMaxRetries` times (default 2).
+  When the API asks for a wait (in a `Retry-After` header or the body's `retry_after_seconds`) of a minute or less,
+  the client waits that long; otherwise it backs off from half a second.
+- **Returned at once:** a requested wait longer than a minute, in `Error.RetryAfter`, for you to schedule.
 - **Never retried:** any other error, and a cancelled or expired `context`.
 - **Merged person IDs** are followed to the person they now point at, and the answer's `RedirectedFrom` names the ID
   you asked for.
@@ -184,8 +324,10 @@ A `Client` is safe for concurrent use; create one and share it.
 
 ## Fair use
 
-The API is free and open. Please send a `WithUserAgent` that names your app, keep to one request at a time per user
-action, and cache answers you reuse. A burst of lookups may be rate-limited; for a whole roster, see
+The API is free and open. It allows about 100 requests per 5 minutes from one address, across every endpoint, and 20
+from VPNs, proxies and hosting providers, which includes most cloud servers. Please send a `WithUserAgent` that names
+your app, keep to one request at a time per user action, and cache answers you reuse. Over the limit, the SDK returns
+an `*Error` with `Code` `"rate_limited"` whose `RetryAfter` is the most you need to wait; for a whole roster, see
 [bulk songwriter lookup](https://songlinks.io/bulk-songwriter-lookup).
 
 ## Links

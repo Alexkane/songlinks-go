@@ -165,6 +165,13 @@ func TestPersonWorksYieldsAnErrorOnce(t *testing.T) {
 	}
 }
 
+func TestWritersAcceptsALineFromAWindowsFile(t *testing.T) {
+	s := newServer(t, reply{200, nil, map[string]any{"writers": []any{}}})
+	if _, err := s.client().Writers(ctx, []string{"338980326\r"}); err != nil {
+		t.Errorf("a trailing \\r is trimmed by the API, so the SDK should not refuse it: %v", err)
+	}
+}
+
 func TestWritersJoinsTheListAndRefusesABadOne(t *testing.T) {
 	s := newServer(t, reply{200, nil, map[string]any{"writers": []any{}}})
 	if _, err := s.client().Writers(ctx, []string{"338980326", "00340247397"}); err != nil {
@@ -175,6 +182,11 @@ func TestWritersJoinsTheListAndRefusesABadOne(t *testing.T) {
 	}
 	if _, err := s.client().Writers(ctx, nil); err == nil {
 		t.Error("an empty list should be refused")
+	}
+	for _, bad := range []string{"338980326,00340247397", "338980326;1", "338980326\n1", "338980326%2C1"} {
+		if _, err := s.client().Writers(ctx, []string{bad}); err == nil {
+			t.Errorf("an entry holding a separator should be refused: %q", bad)
+		}
 	}
 	if _, err := s.client().Writers(ctx, make([]string, WritersMax+1)); err == nil {
 		t.Error("a list over the limit should be refused")
@@ -198,7 +210,7 @@ func TestAValidationErrorIsInvalidRequest(t *testing.T) {
 	s := newServer(t, reply{422, nil, map[string]any{"detail": []any{map[string]any{"msg": "bad"}}}})
 	_, err := s.client().Lookup(ctx, "x", &LookupOptions{Threshold: 2})
 	var apiErr *Error
-	if !errors.As(err, &apiErr) || apiErr.Code != "invalid_request" || apiErr.Message != "HTTP 422" {
+	if !errors.As(err, &apiErr) || apiErr.Code != "invalid_request" || apiErr.Message != "bad" {
 		t.Fatalf("got %#v", err)
 	}
 }
@@ -241,13 +253,93 @@ func TestA429WaitsRetryAfterAndFailsWhenRetriesRunOut(t *testing.T) {
 	}
 }
 
-func TestRetryAfterIsCappedAtAMinute(t *testing.T) {
-	s := newServer(t, reply{429, map[string]string{"Retry-After": "3600"}, nil}, reply{200, nil, map[string]any{}})
+func TestAWaitLongerThanAMinuteIsReturnedAtOnce(t *testing.T) {
+	s := newServer(t, reply{429, map[string]string{"Retry-After": "3600"}, nil})
+	_, err := s.client().Version(ctx)
+	var apiErr *Error
+	if !errors.As(err, &apiErr) || apiErr.RetryAfter != time.Hour || len(s.requests) != 1 {
+		t.Errorf("err %#v after %d requests", err, len(s.requests))
+	}
+}
+
+func TestTheEdgesWaitIsReadFromTheBody(t *testing.T) {
+	s := newServer(t, reply{429, nil, map[string]any{"error": "rate_limited", "message": "Too many", "retry_after_seconds": 300}})
+	_, err := s.client().Version(ctx)
+	var apiErr *Error
+	if !errors.As(err, &apiErr) || apiErr.RetryAfter != 300*time.Second || len(s.requests) != 1 {
+		t.Errorf("err %#v after %d requests", err, len(s.requests))
+	}
+}
+
+func TestAShortWaitInTheBodyIsWaitedOut(t *testing.T) {
+	s := newServer(t, reply{429, nil, map[string]any{"retry_after_seconds": 5}}, reply{200, nil, map[string]any{}})
 	if _, err := s.client().Version(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if len(s.waits) != 1 || s.waits[0] != time.Minute {
+	if len(s.waits) != 1 || s.waits[0] != 5*time.Second {
 		t.Errorf("waits %v", s.waits)
+	}
+}
+
+func TestTheHeaderWinsOverTheBody(t *testing.T) {
+	s := newServer(t, reply{429, map[string]string{"Retry-After": "2"}, map[string]any{"retry_after_seconds": 300}},
+		reply{200, nil, map[string]any{}})
+	if _, err := s.client().Version(ctx); err != nil || len(s.waits) != 1 || s.waits[0] != 2*time.Second {
+		t.Errorf("err %v, waits %v", err, s.waits)
+	}
+}
+
+func TestA503AskingForMoreThanAMinuteIsReturnedAtOnce(t *testing.T) {
+	s := newServer(t, reply{503, map[string]string{"Retry-After": "120"}, map[string]any{"error": "busy", "message": "Busy."}})
+	_, err := s.client().Version(ctx)
+	var apiErr *Error
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != 503 || apiErr.RetryAfter != 2*time.Minute || len(s.requests) != 1 {
+		t.Errorf("err %#v after %d requests", err, len(s.requests))
+	}
+}
+
+func TestAnAbsurdWaitIsNotMistakenForAShortOne(t *testing.T) {
+	s := newServer(t, reply{429, map[string]string{"Retry-After": "1e300"}, nil})
+	if _, err := s.client().Version(ctx); err == nil || len(s.requests) != 1 {
+		t.Errorf("err %v after %d requests", err, len(s.requests))
+	}
+}
+
+func TestA422SaysWhichParameterWasWrong(t *testing.T) {
+	detail := []any{map[string]any{"loc": []any{"query", "threshold"}, "msg": "Input should be less than or equal to 0.99"}}
+	s := newServer(t, reply{422, nil, map[string]any{"detail": detail}})
+	_, err := s.client().Lookup(ctx, "x y", &LookupOptions{Threshold: 2})
+	var apiErr *Error
+	if !errors.As(err, &apiErr) || apiErr.Message != "threshold: Input should be less than or equal to 0.99" {
+		t.Errorf("got %#v", err)
+	}
+}
+
+func TestAnEmptyNameOrIDIsRefusedBeforeAnyRequest(t *testing.T) {
+	s := newServer(t)
+	if _, err := s.client().Lookup(ctx, " ", nil); err == nil {
+		t.Error("an empty name should be refused")
+	}
+	if _, err := s.client().Person(ctx, "", nil); err == nil {
+		t.Error("an empty ID should be refused")
+	}
+	if len(s.requests) != 0 {
+		t.Errorf("%d requests", len(s.requests))
+	}
+}
+
+func TestNormalizeIPIMatchesTheAPIsReading(t *testing.T) {
+	for in, want := range map[string]string{
+		"338980326":          "00338980326",
+		"003-389-803 26":     "00338980326",
+		"003\u2013389803 26": "00338980326", // an en dash, as a word processor writes it
+		"12a":                "12a",
+		" 15036818.0 ":       "15036818.0",
+		"123456789012":       "123456789012",
+	} {
+		if got := NormalizeIPI(in); got != want {
+			t.Errorf("NormalizeIPI(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 

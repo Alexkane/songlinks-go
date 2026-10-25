@@ -26,7 +26,11 @@ func main() {
 	}
 	if answer.Answer == "rejected" {
 		// Not an error: the API explains why it gave no candidates, such as a name too common to group.
-		fmt.Println("No answer:", answer.Rejection.Code, "- nearest:", answer.Rejection.Nearest)
+		fmt.Println("No answer:", answer.Rejection.Code)
+		// Nearest suggests registered names close to the one asked, when there are any.
+		if len(answer.Rejection.Nearest) > 0 {
+			fmt.Println("Did you mean:", strings.Join(answer.Rejection.Nearest, ", "))
+		}
 		return
 	}
 	for _, person := range answer.Candidates {
