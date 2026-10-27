@@ -4,8 +4,9 @@
 [![ci](https://github.com/Alexkane/songlinks-go/actions/workflows/ci.yml/badge.svg)](https://github.com/Alexkane/songlinks-go/actions/workflows/ci.yml)
 [![licence: MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
 
-**Find the songwriter behind a name.** The official Go SDK for [Songlinks](https://songlinks.io): look up a songwriter
-by name or IPI name number and get the person behind every registration, with their works and ISWCs.
+**Find the songwriter behind a name, an IPI or an ISRC.** The official Go SDK for [Songlinks](https://songlinks.io):
+look up a songwriter by name or IPI name number, or find who wrote a recording from its ISRC, and get the person behind
+every registration, with their works and ISWCs.
 
 One songwriter is rarely one record. They're registered under different spellings, under several IPI name numbers, or
 with no number at all. Songlinks groups those registrations into one person, shows the evidence for every join, and
@@ -95,6 +96,59 @@ for work, err := range client.PersonWorks(ctx, "SLP-ZYM7-GD3E-S", 0) {
 	fmt.Println(work.Title)
 }
 ```
+
+### Who wrote this recording? Songwriters by ISRC
+
+A released recording usually has an ISRC, a 12-character code such as `USMC19959123` (see
+[the words used here](#the-words-used-here)). Give `Songwriters` up to 50 of them and it says, for each one, which songs the recording is registered to, who wrote
+each song, and each writer's person ID:
+
+```go
+// A real ISRC written with dashes, a well-formed code no recording is registered under, and something that is not an
+// ISRC at all.
+answer, err := client.Songwriters(ctx, []string{"US-MC1-99-59123", "ZZZZZ0000000", "nope"})
+if err != nil {
+	log.Fatal(err)
+}
+for _, recording := range answer.Recordings {
+	fmt.Println(recording.ISRC, recording.Status)
+	for _, work := range recording.Works {
+		for _, w := range work.Writers {
+			fmt.Println("  ", work.Title, w.Name, w.IPINameNumber, w.Role, w.PersistentID)
+		}
+	}
+}
+// USMC19959123 registered
+//    ALL THE SMALL THINGS MARK HOPPUS 00338980326 ComposerLyricist SLP-ZYM7-GD3E-S
+//    ALL THE SMALL THINGS TRAVIS L BARKER 00340247397 ComposerLyricist SLP-MG23-XM9B-Y
+//    ALL THE SMALL THINGS THOMAS DELONGE 00338976704 ComposerLyricist SLP-MEA6-3QQJ-C
+// ZZZZZ0000000 unregistered
+// nope invalid
+```
+
+Each recording's `Status` is one of three:
+
+| Status | What it means | `Works` |
+| --- | --- | --- |
+| `registered` | The recording is registered to at least one song (work). | The songs, each with its writers. |
+| `unregistered` | No song in the registration data lists this recording. It is an answer, not an error: the recording may not have been linked to its song yet, or the code may be mistyped. | Empty. |
+| `invalid` | The entry is not an ISRC (two letters, three letters or digits, then seven digits). It does not fail the call. `ISRC` is your text as you sent it. | Empty. |
+
+Things to know:
+
+- **A writer's `PersistentID` can be empty, and often is.** It is empty when the writer's record isn't part of a stored
+  person yet, for example because the writer was registered with no IPI name number. Nearly half of registered
+  recordings have at least one writer like that. The writer's `Name`, `Role` and `IPINameNumber` (when there is one)
+  are still the answer; `PersonURL` is empty too, and otherwise is a page such as `/person/SLP-ZYM7-GD3E-S` on
+  `https://songlinks.io`.
+- **Match answers to your list by ISRC, not by position.** Case, dashes and spaces are ignored, so `US-MC1-99-59123` and
+  `usmc19959123` are one recording and come back as one answer, written `USMC19959123`. `songlinks.NormalizeISRC`
+  turns your input into the same form.
+- **Only the plain dash is ignored.** A word processor sometimes turns `-` into a longer dash (`–`); an ISRC written
+  with one comes back `invalid`.
+- **Writers only.** Publishers and administrators on the song are left out, and so are ownership shares.
+- **One entry, one ISRC.** An entry holding a comma, semicolon or line break is refused, because the API would read it
+  as several; more than 50 entries is refused too, so send a long list in batches of `songlinks.SongwritersMax`.
 
 ## Your first program, step by step
 
@@ -197,6 +251,10 @@ Music-publishing words, which you'll meet in the answers:
   [More about IPI name numbers](https://songlinks.io/guides/ipi-name-numbers).
 - **Work**: a song as a composition (the melody and lyrics), as opposed to a particular recording of it.
 - **ISWC**: the international code for a work, such as `T0719661581`. Not every registered work has one.
+- **ISRC**: the international code for one recording, such as `USMC19959123` for blink-182's recording of "All the
+  Small Things". An ISWC names the song (the composition); an ISRC names one recording of it, so a song that has been
+  recorded many times has one ISWC and many ISRCs. You'll usually find ISRCs in a distributor's or label's catalogue
+  export. They're written with or without dashes (`US-MC1-99-59123`); Songlinks reads both.
 - **Person** and **person ID**: Songlinks groups the records it judges to be one human into a person and gives them a
   person ID, such as `SLP-ZYM7-GD3E-S`. Every person has a page, such as
   [songlinks.io/person/SLP-ZYM7-GD3E-S](https://songlinks.io/person/SLP-ZYM7-GD3E-S).
@@ -234,6 +292,7 @@ Runnable programs for the jobs people use Songlinks for, each under 70 lines. Co
 | [`which-namesake`](examples/which-namesake/main.go) | Two writers share a name: which one wrote this song? |
 | [`check-roster`](examples/check-roster/main.go) | A list of IPI name numbers in, CSV out: who holds each and their works. |
 | [`export-catalogue`](examples/export-catalogue/main.go) | Every work of a person, as CSV. |
+| [`songwriters-by-isrc`](examples/songwriters-by-isrc/main.go) | A list of ISRCs in, CSV out: the songs each recording is registered to, their writers and person IDs. |
 
 ```sh
 go run ./examples/check-roster roster.txt > checked.csv
@@ -249,11 +308,12 @@ The examples are vetted and built with the package in CI, so one that misreads a
 | `Person(ctx, id, *PersonOptions)` | `GET /v1/person/{id}` | One person: their registrations, names, IPI name numbers and a page of works. |
 | `PersonWorks(ctx, id, pageSize)` | `GET /v1/person/{id}` | Every work of a person, as an `iter.Seq2[PersonWork, error]` over the pages. |
 | `Writers(ctx, ipiNameNumbers)` | `GET /v1/writers` | Up to 50 IPI name numbers checked at once: the stored person behind each. |
+| `Songwriters(ctx, isrcs)` | `GET /v1/songwriters` | Up to 50 recordings checked at once, by ISRC: the songs each is registered to, their writers and the person behind each. |
 | `Version(ctx)` | `GET /v1/version` | What is serving: the release, the model and the date of the registration data. |
 
-The answer types are named after the API's schemas (`LookupResponse`, `PersonResponse`, `Cluster`, `WritersResponse`
-and the rest), with Go's initialisms (`PersistentID`, `IPINameNumber`, `ISWC`). Two are renamed: the API's `Record` is
-`LookupRecord` and its `Error` is `APIError`. The full reference is on
+The answer types are named after the API's schemas (`LookupResponse`, `PersonResponse`, `Cluster`, `WritersResponse`,
+`SongwritersResponse` and the rest), with Go's initialisms (`PersistentID`, `IPINameNumber`, `ISWC`, `ISRC`). Two are
+renamed: the API's `Record` is `LookupRecord` and its `Error` is `APIError`. The full reference is on
 [pkg.go.dev](https://pkg.go.dev/github.com/Alexkane/songlinks-go).
 
 ### Reading an answer
@@ -264,7 +324,8 @@ A **person** and a **candidate** are different things: see [the words used here]
   them; the person `SLP-ZYM7-GD3E-S` holds one of them as theirs (294 works) and lists the other in `Possible`.
   `Person` is the authority on what an ID holds.
 - **Match a writers check by number, not position.** Repeats and two forms of one number come back as one entry, as
-  11 digits. `songlinks.NormalizeIPI` turns your input into the same form.
+  11 digits. `songlinks.NormalizeIPI` turns your input into the same form. A songwriters check is the same, by ISRC,
+  with `songlinks.NormalizeISRC`.
 - **A missing string is `""`.** Many records have no person ID yet, and that is ordinary. A number, boolean or object
   the API may leave out is a pointer, because there nil and zero say different things: a `WriterAnswer`'s `Works` is
   nil unless its `Status` is `"person"`, and a false `Prerelease` is a released ID.
@@ -325,9 +386,10 @@ A `Client` is safe for concurrent use; create one and share it.
 ## Fair use
 
 The API is free and open. It allows about 100 requests per 5 minutes from one address, across every endpoint, and 20
-from VPNs, proxies and hosting providers, which includes most cloud servers. Please send a `WithUserAgent` that names
-your app, keep to one request at a time per user action, and cache answers you reuse. Over the limit, the SDK returns
-an `*Error` with `Code` `"rate_limited"` whose `RetryAfter` is the most you need to wait; for a whole roster, see
+from VPNs, proxies and hosting providers, which includes most cloud servers. A `Writers` or `Songwriters` call counts
+as one request however many numbers or ISRCs it holds. Please send a `WithUserAgent` that names your app, keep to one
+request at a time per user action, and cache answers you reuse. Over the limit, the SDK returns an `*Error` with
+`Code` `"rate_limited"` whose `RetryAfter` is the most you need to wait; for a whole roster, see
 [bulk songwriter lookup](https://songlinks.io/bulk-songwriter-lookup).
 
 ## Links

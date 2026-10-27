@@ -35,12 +35,14 @@ NAMES = {
     "PersonWork": "PersonWork", "WorksPage": "WorksPage", "PersonEvent": "PersonEvent",
     "PersonProvenance": "PersonProvenance", "BuildRef": "BuildRef",
     "PersonWithdrawnResponse": "PersonWithdrawnResponse", "WritersResponse": "WritersResponse",
-    "WriterAnswer": "WriterAnswer", "WritersSummary": "WritersSummary", "VersionResponse": "VersionResponse",
-    "Error": "APIError", "RateLimited": "RateLimited",
+    "WriterAnswer": "WriterAnswer", "WritersSummary": "WritersSummary", "SongwritersResponse": "SongwritersResponse",
+    "RecordingAnswer": "RecordingAnswer", "RecordingWork": "RecordingWork", "RecordingWriter": "RecordingWriter",
+    "VersionResponse": "VersionResponse", "Error": "APIError", "RateLimited": "RateLimited",
 }
 
 # Go's initialisms (https://go.dev/wiki/CodeReviewComments#initialisms), as they occur in the API's field names.
-INITIALISMS = {"id": "ID", "ipi": "IPI", "url": "URL", "iswc": "ISWC", "md5": "MD5", "mlc": "MLC", "ms": "Ms", "api": "API"}
+INITIALISMS = {"id": "ID", "ipi": "IPI", "url": "URL", "iswc": "ISWC", "md5": "MD5", "mlc": "MLC", "ms": "Ms", "api": "API",
+               "isrc": "ISRC"}
 
 # Where the API's wording names its query parameters, the Go reader needs the method to call. Keyed by (schema, field).
 OVERRIDES = {
@@ -50,6 +52,9 @@ OVERRIDES = {
         "Client.PersonWorks reads every page for you.",
     ("PersonResponse", "works_list"): "One page of works. For the next page, pass WorksList.NextOffset as "
         "PersonOptions.WorksOffset, or read them all with Client.PersonWorks.",
+    # The API's "a lookup's records" names a JSON path; the Go reader needs the type that carries the same number.
+    ("RecordingWriter", "party_record_id"): "Identifies the writer's registration record: the same number as a "
+        "LookupRecord's PartyRecordID.",
 }
 
 
@@ -62,6 +67,9 @@ def sentence(text: str, fields: dict[str, str], string: bool = False) -> str:
     if not t:
         return t
     t = re.sub(r"\[([^\]]+)\]\((/[^)\s]*)\)", lambda m: f"[{m[1]}]({SITE}{m[2]})", t)
+    # "This site" means the API's own address, which a reader in an editor or on pkg.go.dev cannot see: a person_url
+    # of "/person/SLP-…" is only usable once they know what to put in front of it.
+    t = t.replace("relative to this site", f"relative to {SITE}")
     # A backticked name that is a field of this schema is given as the Go field; any other backticked word is a
     # value (`model`, `rejected`) and stays as the API writes it.
     t = re.sub(r"`([a-z0-9_]+)`", lambda m: fields.get(m[1], m[0]), t)
@@ -79,7 +87,7 @@ def type_comment(name: str, text: str) -> str:
         return f"{name} is the body of an HTTP {m[1]} answer: {m[2][0].lower()}{m[2][1:]}"
     first = text.split(" ", 1)[0]
     # Plural nouns read badly after "is": "WritersSummary is totals over the list".
-    verb = {"WritersResponse": "lists", "WritersSummary": "holds"}.get(name)
+    verb = {"WritersResponse": "lists", "WritersSummary": "holds", "SongwritersResponse": "lists"}.get(name)
     if verb:
         return f"{name} {verb} {text[0].lower()}{text[1:]}"
     lowered = text[0].lower() + text[1:]

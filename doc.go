@@ -1,4 +1,5 @@
-// Package songlinks is the official Go SDK for the Songlinks API: find the songwriter behind a name.
+// Package songlinks is the official Go SDK for the Songlinks API: find the songwriter behind a name, an IPI name
+// number or a recording's ISRC.
 //
 // One songwriter is rarely one record. They are registered under different spellings, under several IPI name numbers,
 // or with no number at all. Songlinks groups those registrations into one person, shows the evidence for every join,
@@ -27,6 +28,13 @@
 // have no person ID yet, and that is ordinary). A number, boolean or object it may leave out is a pointer, because
 // there nil and zero say different things: a nil [WriterAnswer].Works is not known (it is set only when Status is
 // "person"), and a false Prerelease is a released ID.
+//
+// [Client.Songwriters] starts from recordings instead of names: give it ISRCs, the 12-character codes that identify
+// one recording each (such as USMC19959123), and it returns the works (songs) each recording is registered to and
+// their writers. An ISRC names a recording; an ISWC names the song, which can have many recordings. Each
+// [RecordingAnswer] has a Status of "registered", "unregistered" (no work lists the recording, an answer rather than
+// an error) or "invalid" (not an ISRC), and a writer's PersistentID is empty when their record is not part of a
+// stored person yet, which is common for writers registered with no IPI name number.
 //
 // A candidate's PersistentID is the stored person when there is exactly one; when its records belong to more than
 // one, PersistentID is empty and StoredPersons lists them. A Prerelease ID may stop resolving, or point at a different

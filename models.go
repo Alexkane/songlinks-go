@@ -651,8 +651,8 @@ type WriterAnswer struct {
 	// How many persons hold this number: 1 for `person`, 2 or more for `several`, 0 otherwise.
 	Persons *int `json:"persons,omitempty"`
 
-	// The page to open, relative to this site: the person's page, or for `several` the page listing everyone who holds
-	// the number.
+	// The page to open, relative to https://songlinks.io: the person's page, or for `several` the page listing everyone
+	// who holds the number.
 	PersonURL string `json:"person_url,omitempty"`
 }
 
@@ -679,6 +679,66 @@ type WritersSummary struct {
 	// Of Persons, how many have `works_elsewhere` above zero: writers with works registered under another spelling or
 	// number.
 	WithWorksElsewhere int `json:"with_works_elsewhere"`
+}
+
+// SongwritersResponse lists the writers behind a list of recordings, by ISRC, in the order sent.
+type SongwritersResponse struct {
+	// One entry per distinct ISRC, in the order first sent.
+	Recordings []RecordingAnswer `json:"recordings"`
+
+	// Your remaining allowance; nil when no per-caller limit is in force.
+	RateLimit *RateLimit `json:"rate_limit,omitempty"`
+}
+
+// RecordingAnswer is one ISRC from the list: the works it is registered to and their writers.
+type RecordingAnswer struct {
+	// The ISRC as 12 characters, upper case, without dashes. For an `invalid` entry, the text as sent, cut to 32
+	// characters.
+	ISRC string `json:"isrc"`
+
+	// `registered`: the recording is registered to at least one work. `unregistered`: it is registered to no work in this
+	// data. `invalid`: not an ISRC (two letters, three letters or digits, seven digits; dashes and spaces are ignored).
+	Status string `json:"status"`
+
+	// The works the recording is registered to; empty unless Status is `registered`.
+	Works []RecordingWork `json:"works,omitempty"`
+}
+
+// RecordingWork is one work (a song as a composition) the recording is registered to.
+type RecordingWork struct {
+	// The work's song code in the registration data.
+	SongCode string `json:"song_code"`
+
+	// The registered title.
+	Title string `json:"title,omitempty"`
+
+	// The work's ISWC, or empty when the work has none.
+	ISWC string `json:"iswc,omitempty"`
+
+	// The writers registered on the work; publishers and administrators are left out.
+	Writers []RecordingWriter `json:"writers"`
+}
+
+// RecordingWriter is one writer registered on a work the recording is registered to, and the person whose record it
+// is.
+type RecordingWriter struct {
+	// Identifies the writer's registration record: the same number as a LookupRecord's PartyRecordID.
+	PartyRecordID int `json:"party_record_id"`
+
+	// The name as registered.
+	Name string `json:"name,omitempty"`
+
+	// The record's IPI name number, or empty when it has none.
+	IPINameNumber string `json:"ipi_name_number,omitempty"`
+
+	// The writer's role on the work, such as `ComposerLyricist`, `Composer` or `Lyricist`.
+	Role string `json:"role"`
+
+	// The person ID this record belongs to, `SLP-XXXX-XXXX-C`; empty when the record is not part of a stored person yet.
+	PersistentID string `json:"persistent_id,omitempty"`
+
+	// The person's page, relative to https://songlinks.io; empty when PersistentID is.
+	PersonURL string `json:"person_url,omitempty"`
 }
 
 // VersionResponse says what is serving: the release, the model and the settings every lookup uses.

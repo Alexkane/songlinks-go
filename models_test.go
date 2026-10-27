@@ -24,8 +24,9 @@ var types = map[string]any{
 	"PersonWork": PersonWork{}, "WorksPage": WorksPage{}, "PersonEvent": PersonEvent{},
 	"PersonProvenance": PersonProvenance{}, "BuildRef": BuildRef{},
 	"PersonWithdrawnResponse": PersonWithdrawnResponse{}, "WritersResponse": WritersResponse{},
-	"WriterAnswer": WriterAnswer{}, "WritersSummary": WritersSummary{}, "VersionResponse": VersionResponse{},
-	"Error": APIError{}, "RateLimited": RateLimited{},
+	"WriterAnswer": WriterAnswer{}, "WritersSummary": WritersSummary{}, "SongwritersResponse": SongwritersResponse{},
+	"RecordingAnswer": RecordingAnswer{}, "RecordingWork": RecordingWork{}, "RecordingWriter": RecordingWriter{},
+	"VersionResponse": VersionResponse{}, "Error": APIError{}, "RateLimited": RateLimited{},
 }
 
 type schema struct {
@@ -102,7 +103,7 @@ func TestEveryTypeMatchesItsSchema(t *testing.T) {
 func TestRealAnswersDecodeWithNothingLeftOver(t *testing.T) {
 	for file, into := range map[string]any{
 		"lookup.json": &LookupResponse{}, "lookup-two-persons.json": &LookupResponse{}, "person.json": &PersonResponse{},
-		"writers.json": &WritersResponse{}, "version.json": &VersionResponse{},
+		"writers.json": &WritersResponse{}, "songwriters.json": &SongwritersResponse{}, "version.json": &VersionResponse{},
 	} {
 		raw, err := os.ReadFile(filepath.Join("testdata", "fixtures", file))
 		if err != nil {

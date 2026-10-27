@@ -2,6 +2,7 @@ package songlinks
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -57,5 +58,21 @@ func TestLiveWritersAndVersion(t *testing.T) {
 	v, err := c.Version(ctx)
 	if err != nil || v.Version == "" {
 		t.Fatalf("%+v, %v", v, err)
+	}
+}
+
+func TestLiveSongwriters(t *testing.T) {
+	answer, err := live(t).Songwriters(ctx, []string{"USMC19959123", "us-mc1-99-59123", "ZZZZZ0000000", "nope"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Two spellings of one ISRC are one answer, so four entries are three answers.
+	var statuses []string
+	for _, r := range answer.Recordings {
+		statuses = append(statuses, r.ISRC+" "+r.Status)
+	}
+	want := "USMC19959123 registered,ZZZZZ0000000 unregistered,nope invalid"
+	if strings.Join(statuses, ",") != want {
+		t.Errorf("got %v, want %s", statuses, want)
 	}
 }

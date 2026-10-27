@@ -18,13 +18,16 @@ import (
 )
 
 // Version is this SDK's release.
-const Version = "0.1.1"
+const Version = "0.2.0"
 
 // DefaultBaseURL is the API's address.
 const DefaultBaseURL = "https://songlinks.io"
 
 // WritersMax is the most IPI name numbers [Client.Writers] accepts in one call, the API's own limit.
 const WritersMax = 50
+
+// SongwritersMax is the most ISRCs [Client.Songwriters] accepts in one call, the API's own limit.
+const SongwritersMax = 50
 
 // WorksPageMax is the most works one [Client.Person] call returns; [Client.PersonWorks] pages through the rest.
 const WorksPageMax = 200
@@ -69,6 +72,46 @@ func isIPISeparator(r rune) bool {
 // isPythonSpace is what Python's \s accepts: Unicode spaces plus the ASCII separators 0x1c-0x1f.
 func isPythonSpace(r rune) bool {
 	return unicode.IsSpace(r) || (r >= 0x1c && r <= 0x1f)
+}
+
+// NormalizeISRC writes an ISRC the way [Client.Songwriters] answers do, so the answers can be matched to the codes you
+// sent. Spaces and dashes are dropped and letters are upper-cased: "us-mc1-99-59123" and "USMC19959123" both become
+// "USMC19959123". Anything that is not then an ISRC (two letters, three letters or digits, seven digits) is returned
+// with surrounding spaces removed and cut to 32 characters, as the API echoes it with Status "invalid".
+//
+// Only the plain dash (-) is dropped, as the API drops only that one: an ISRC whose dashes a word processor has turned
+// into typographic ones (–) is not an ISRC to the API, and comes back "invalid".
+func NormalizeISRC(isrc string) string {
+	// The API upper-cases the whole entry and then matches it (writer/work_pages.py isrc_key). Go's ToUpper maps one
+	// character to one, where Python's maps ß to SS, so an entry that only becomes an ISRC that way is read differently;
+	// no real ISRC holds one.
+	code := strings.ToUpper(strings.Map(func(r rune) rune {
+		if isPythonSpace(r) || r == '-' {
+			return -1
+		}
+		return r
+	}, isrc))
+	if isrcCode.MatchString(code) {
+		return code
+	}
+	// Characters, not bytes, as the API counts them: a byte cut could split a character in two.
+	trimmed := []rune(strings.TrimFunc(isrc, isPythonSpace))
+	if len(trimmed) > 32 {
+		trimmed = trimmed[:32]
+	}
+	return string(trimmed)
+}
+
+// isrcCode mirrors the API's own reading of an ISRC, `[A-Z]{2}[A-Z0-9]{3}\d{7}` in Python, where \d is any Unicode
+// decimal digit: \p{Nd} here, since Go's \d is ASCII only and would call invalid a code the API answers for.
+var isrcCode = regexp.MustCompile(`^[A-Z]{2}[A-Z0-9]{3}\p{Nd}{7}$`)
+
+// splitsAsSeveral says whether the API would read one list entry as several. It splits a list on a comma, semicolon,
+// carriage return or line feed, and on the text %2C (a comma that was URL-encoded twice). The edges are trimmed first,
+// as the API trims them, so a line read from a Windows file (ending "\r") passes.
+func splitsAsSeveral(entry string) bool {
+	inner := strings.TrimFunc(entry, isPythonSpace)
+	return strings.ContainsAny(inner, ",;\r\n") || strings.Contains(strings.ToLower(inner), "%2c")
 }
 
 // Client calls the Songlinks API. Create one with [New] and reuse it; it is safe for concurrent use.
@@ -255,15 +298,53 @@ func (c *Client) Writers(ctx context.Context, ipiNameNumbers []string) (*Writers
 		return nil, fmt.Errorf("songlinks: Writers takes at most %d IPI name numbers per call, got %d", WritersMax, len(ipiNameNumbers))
 	}
 	for _, n := range ipiNameNumbers {
-		// The API splits its list on these, and on the text %2C, so one entry holding one would be read as several.
-		// The edges are trimmed first, as the API trims them, so a line read from a Windows file (ending "\r") passes.
-		inner := strings.TrimFunc(n, isPythonSpace)
-		if strings.ContainsAny(inner, ",;\r\n") || strings.Contains(strings.ToLower(inner), "%2c") {
+		if splitsAsSeveral(n) {
 			return nil, fmt.Errorf("songlinks: Writers takes one IPI name number per entry, got %q", n)
 		}
 	}
 	var answer WritersResponse
 	return &answer, c.get(ctx, "/v1/writers", url.Values{"ipi": {strings.Join(ipiNameNumbers, ",")}}, &answer)
+}
+
+// Songwriters finds who wrote up to [SongwritersMax] recordings at once, by ISRC, such as "USMC19959123". For each
+// recording it returns the works (songs) the recording is registered to, the writers registered on each work, and the
+// person ID of each writer where Songlinks has one. Case does not matter, and spaces and dashes inside an ISRC are
+// ignored ("US-MC1-99-59123" is "USMC19959123"). The API refuses a longer list rather than shortening it, and so does
+// this method, counting entries: for more, call it once per batch. Each entry is one ISRC: an entry holding a comma,
+// semicolon, line break or the text "%2C" is refused, since the API would read it as several.
+//
+// Each answer's Status says what was found:
+//   - "registered": the recording is registered to at least one work, and Works lists them with their writers.
+//   - "unregistered": no work in the registration data lists the recording. This is an answer, not an error: the
+//     recording may not have been linked to its song yet, or the code may be mistyped.
+//   - "invalid": the entry is not an ISRC. It does not fail the call, and ISRC is the text you sent.
+//
+// A writer's PersistentID and PersonURL are empty when their record is not part of a stored person yet. That is common,
+// not an error (a writer registered with no IPI name number, for example, is often not grouped into a person), and
+// nearly half of registered recordings have at least one writer like that. The writer's name, role and IPI name number (where there
+// is one) are still the answer. Only writers are listed: publishers and administrators are left out.
+//
+// The answer has one entry per distinct ISRC, in the order each was first sent. Two spellings of one code
+// ("usmc19959123" and "US-MC1-99-59123") and repeats come back as one entry, written as 12 characters, so match
+// answers to your list by ISRC, not by position: [NormalizeISRC] turns your input into the form the answer uses.
+//
+// It returns an error, without calling the API, when the list is empty or too long, and an [*Error] when the API
+// answers with an error. An entry that is empty or only spaces is skipped by the API, and a list with nothing else in
+// it is answered with an [*Error].
+func (c *Client) Songwriters(ctx context.Context, isrcs []string) (*SongwritersResponse, error) {
+	if len(isrcs) == 0 {
+		return nil, errors.New("songlinks: Songwriters needs at least one ISRC")
+	}
+	if len(isrcs) > SongwritersMax {
+		return nil, fmt.Errorf("songlinks: Songwriters takes at most %d ISRCs per call, got %d", SongwritersMax, len(isrcs))
+	}
+	for _, code := range isrcs {
+		if splitsAsSeveral(code) {
+			return nil, fmt.Errorf("songlinks: Songwriters takes one ISRC per entry, got %q", code)
+		}
+	}
+	var answer SongwritersResponse
+	return &answer, c.get(ctx, "/v1/songwriters", url.Values{"isrc": {strings.Join(isrcs, ",")}}, &answer)
 }
 
 // Version asks what is serving: the API's release, the model and code in use, and the date of the registration data.

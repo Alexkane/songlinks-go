@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -193,6 +194,81 @@ func TestWritersJoinsTheListAndRefusesABadOne(t *testing.T) {
 	}
 	if len(s.requests) != 1 {
 		t.Error("a refused list must not reach the API")
+	}
+}
+
+func TestSongwritersJoinsTheListAndRefusesABadOne(t *testing.T) {
+	s := newServer(t, reply{200, nil, map[string]any{"recordings": []any{}}})
+	if _, err := s.client().Songwriters(ctx, []string{"US-MC1-99-59123", "usmc19959123", "nope"}); err != nil {
+		t.Fatal(err)
+	}
+	if r := s.requests[0]; r.URL.Path != "/v1/songwriters" || s.query(0).Get("isrc") != "US-MC1-99-59123,usmc19959123,nope" {
+		t.Errorf("asked for %s", r.URL)
+	}
+	if _, err := s.client().Songwriters(ctx, nil); err == nil {
+		t.Error("an empty list should be refused")
+	}
+	for _, bad := range []string{"USMC19959123,USMC19959124", "USMC19959123;x", "USMC19959123\nx", "USMC19959123%2cx"} {
+		if _, err := s.client().Songwriters(ctx, []string{bad}); err == nil {
+			t.Errorf("an entry holding a separator should be refused: %q", bad)
+		}
+	}
+	if _, err := s.client().Songwriters(ctx, make([]string, SongwritersMax+1)); err == nil {
+		t.Error("a list over the limit should be refused")
+	}
+	if len(s.requests) != 1 {
+		t.Error("a refused list must not reach the API")
+	}
+}
+
+func TestSongwritersAcceptsALineFromAWindowsFileAndASpaceInside(t *testing.T) {
+	s := newServer(t, reply{200, nil, map[string]any{"recordings": []any{}}})
+	// A space is not a separator to the API (it is dropped inside an ISRC), so the SDK must not refuse one either.
+	if _, err := s.client().Songwriters(ctx, []string{"USMC19959123\r", "US MC1 99 59123"}); err != nil {
+		t.Errorf("a trailing \\r and an inner space are the API's to read, not refusals: %v", err)
+	}
+}
+
+func TestSongwritersDecodesARealAnswer(t *testing.T) {
+	raw, err := os.ReadFile("testdata/fixtures/songwriters.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newServer(t, reply{200, nil, json.RawMessage(raw)})
+	answer, err := s.client().Songwriters(ctx, []string{"USMC19959123", "nope"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]RecordingAnswer{}
+	for _, r := range answer.Recordings {
+		got[r.ISRC] = r
+	}
+	small := got[NormalizeISRC("us-mc1-99-59123")]
+	if small.Status != "registered" || len(small.Works) != 1 || small.Works[0].Title != "ALL THE SMALL THINGS" ||
+		len(small.Works[0].Writers) != 3 || small.Works[0].Writers[0].PersistentID != "SLP-ZYM7-GD3E-S" {
+		t.Errorf("registered recording %+v", small)
+	}
+	if bad := got[NormalizeISRC(" nope ")]; bad.Status != "invalid" || len(bad.Works) != 0 {
+		t.Errorf("invalid entry %+v", bad)
+	}
+}
+
+func TestNormalizeISRCMatchesTheAPIsReading(t *testing.T) {
+	for in, want := range map[string]string{
+		"USMC19959123":          "USMC19959123",
+		"us-mc1-99-59123":       "USMC19959123",
+		" US MC1 99 59123 ":     "USMC19959123",
+		"US\u00a0MC19959123":    "USMC19959123",       // a non-breaking space, as pasted from a web page
+		"US\u2013MC19959123":    "US\u2013MC19959123", // an en dash is not dropped by the API, so this is invalid
+		"USMC1995912":           "USMC1995912",        // eleven characters
+		"USMC1995912X":          "USMC1995912X",       // the last seven are digits
+		"1SMC19959123":          "1SMC19959123",       // the first two are letters
+		" nope ":                "nope",
+		strings.Repeat("x", 40): strings.Repeat("x", 32),
+	} {
+		if got := NormalizeISRC(in); got != want {
+			t.Errorf("NormalizeISRC(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 

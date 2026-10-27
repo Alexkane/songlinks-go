@@ -77,6 +77,24 @@ func ExampleClient_Writers() {
 	// 00340247397 person SLP-MG23-XM9B-Y TRAVIS L BARKER
 }
 
+func ExampleClient_Songwriters() {
+	client := songlinks.New(songlinks.WithUserAgent("my-app/1.0"))
+	answer, err := client.Songwriters(context.Background(), []string{"USMC19959123"})
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, recording := range answer.Recordings {
+		for _, work := range recording.Works {
+			for _, w := range work.Writers {
+				fmt.Println(recording.ISRC, work.Title, w.Name, w.PersistentID)
+			}
+		}
+	}
+	// USMC19959123 ALL THE SMALL THINGS MARK HOPPUS SLP-ZYM7-GD3E-S
+	// USMC19959123 ALL THE SMALL THINGS TRAVIS L BARKER SLP-MG23-XM9B-Y
+	// USMC19959123 ALL THE SMALL THINGS THOMAS DELONGE SLP-MEA6-3QQJ-C
+}
+
 func ExampleError() {
 	client := songlinks.New()
 	_, err := client.Person(context.Background(), "SLP-0000-0000-0", nil)
